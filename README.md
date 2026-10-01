@@ -148,9 +148,72 @@ This does not start WSL at Windows sign-in, keep WSL alive indefinitely, or laun
 Chrome. Those are separate startup tasks. Do not run a second manual listener on
 port 9222 while this service is active.
 
+## Persistent Windows listener at sign-in
+
+The optional `serve` command runs a persistent, local TCP relay on Windows:
+
+```powershell
+.\dist\winpipe.exe serve --listen 127.0.0.1:9223 --target 127.0.0.1:9222
+```
+
+This differs from `listen`: it connects directly to a TCP destination, without
+launching a helper. It also works on Linux. Both commands bind only to loopback.
+
+To keep a full checkout and the Windows build at `C:\dev\personal\winpipe`, clone
+the repository there. From the WSL source checkout, cross-compile into it:
+
+```sh
+git clone https://github.com/dmitri-trofimov/winpipe.git /mnt/c/dev/personal/winpipe
+GOOS=windows GOARCH=amd64 go build -o /mnt/c/dev/personal/winpipe/dist/winpipe.exe .
+```
+
+In Windows PowerShell, install the current-user sign-in shortcut and start now:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\personal\winpipe\contrib\windows\install-startup.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\personal\winpipe\contrib\windows\start-winpipe.ps1
+```
+
+The installer refuses to overwrite an existing `winpipe.lnk`. The shortcut runs
+the launcher hidden, which starts `winpipe.exe` with `serve --listen
+127.0.0.1:9223 --target 127.0.0.1:9222 --log-file <log-path>`. It runs at your Windows
+sign-in, not before sign-in. No machine-wide execution-policy setting is changed.
+
+Logs are appended to `%LOCALAPPDATA%\winpipe\listener.log`. View them with:
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\winpipe\listener.log" -Tail 50 -Wait
+```
+
+For WSL access, use the existing stdio bridge to reach this listener:
+
+```text
+WSL localhost:9222 -> interop helper -> Windows localhost:9223 -> Chrome localhost:9222
+```
+
+Install the alternate user service under the same service name:
+
+```sh
+install -Dm644 contrib/systemd/winpipe-windows-listener.service "$HOME/.config/systemd/user/winpipe.service"
+systemctl --user daemon-reload
+systemctl --user restart winpipe.service
+```
+
+This template assumes the Windows checkout is at `C:\dev\personal\winpipe`. WSL
+and Chrome startup remain separate. The Windows listener waits for connections
+even if Chrome is not running; connection failures are logged. The sign-in
+shortcut does not automatically restart the listener if it crashes. Restart it
+by running the launcher again, after stopping any existing listener.
+
+Before replacing the Windows executable with a newer build, stop the process
+whose executable path is this checkout's `dist\winpipe.exe`, update the Windows
+checkout, rebuild, and run the launcher again. Windows locks running executables.
+To disable Windows startup, remove the `winpipe.lnk` shortcut from the current
+user's Startup folder (`shell:startup`).
+
 ## Limits
 
-- TCP only; no UDP, reverse forwarding, or automatic service startup.
+- TCP only; no UDP or reverse forwarding.
 - Chrome and the bridge must be running before browser tools connect.
 - This is a byte relay, not a sandbox or an authentication layer.
 - Client write-half-close is forwarded; destination read EOF ends the session.

@@ -247,6 +247,55 @@ func TestForwardStreaming(t *testing.T) {
 	}
 }
 
+func TestProxyBinaryAndHalfClose(t *testing.T) {
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	serverResult := make(chan error, 1)
+	go func() {
+		conn, err := target.Accept()
+		if err != nil {
+			serverResult <- err
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(10 * time.Second))
+		data, err := io.ReadAll(conn)
+		if err == nil {
+			_, err = conn.Write(data)
+		}
+		serverResult <- err
+	}()
+	client, bridge := tcpPair(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- proxy(ctx, bridge, target.Addr().String(), time.Second) }()
+	payload := bytes.Repeat([]byte{0, 255, 128, '\r', '\n'}, 65536)
+	if _, err := client.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	client.CloseWrite()
+	response, err := io.ReadAll(client)
+	if err != nil || !bytes.Equal(payload, response) {
+		t.Fatalf("proxy response mismatch: %v, got %d bytes", err, len(response))
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServeRejectsSelfForwarding(t *testing.T) {
+	if err := run([]string{"serve", "--listen", "127.0.0.1:9223", "--target", "127.0.0.1:9223"}); err == nil {
+		t.Fatal("serve accepted forwarding to the exact listening address")
+	}
+}
+
 func TestForwardConnectionRefused(t *testing.T) {
 	helper, err := os.Executable()
 	if err != nil {

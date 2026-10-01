@@ -17,7 +17,7 @@ import (
 
 func main() {
 	log.SetOutput(os.Stderr)
-	log.SetFlags(0)
+	log.SetFlags(log.LstdFlags)
 	if err := run(os.Args[1:]); err != nil {
 		log.Printf("winpipe: %v", err)
 		os.Exit(1)
@@ -26,7 +26,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: winpipe <listen|connect> [options]")
+		return errors.New("usage: winpipe <listen|connect|serve> [options]")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -66,8 +66,32 @@ func run(args []string) error {
 			return fmt.Errorf("connect to %s: %w", *target, err)
 		}
 		return relay(ctx, &pipeStream{reader: os.Stdin, writer: os.Stdout}, conn)
+	case "serve":
+		fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+		address := fs.String("listen", "127.0.0.1:9223", "local TCP listening address (loopback only)")
+		target := fs.String("target", "127.0.0.1:9222", "local TCP destination")
+		timeout := fs.Duration("dial-timeout", 10*time.Second, "destination connection timeout")
+		logPath := fs.String("log-file", "", "append diagnostics to this file instead of stderr")
+		if err := fs.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if fs.NArg() != 0 || *timeout <= 0 || *address == *target {
+			return errors.New("serve requires a positive --dial-timeout, distinct listener and target, and no positional arguments")
+		}
+		if *logPath != "" {
+			file, err := os.OpenFile(*logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+			if err != nil {
+				return fmt.Errorf("open log file: %w", err)
+			}
+			// Keep the file open until process exit so main can log fatal errors.
+			log.SetOutput(file)
+		}
+		return listen(ctx, *address, *target, "", *timeout)
 	case "help", "--help", "-h":
-		fmt.Fprintln(os.Stdout, "Usage: winpipe <listen|connect> [options]\nRun winpipe listen -h or winpipe connect -h for options.")
+		fmt.Fprintln(os.Stdout, "Usage: winpipe <listen|connect|serve> [options]\nRun winpipe <command> -h for options.")
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
@@ -102,7 +126,11 @@ func listen(ctx context.Context, address, target, helper string, timeout time.Du
 		<-ctx.Done()
 		ln.Close()
 	}()
-	log.Printf("winpipe: %s -> Windows %s", ln.Addr(), target)
+	if helper == "" {
+		log.Printf("winpipe: local TCP listener %s -> %s", ln.Addr(), target)
+	} else {
+		log.Printf("winpipe: %s -> Windows %s", ln.Addr(), target)
+	}
 	var connections sync.WaitGroup
 	defer connections.Wait()
 	for {
@@ -117,11 +145,27 @@ func listen(ctx context.Context, address, target, helper string, timeout time.Du
 		connections.Add(1)
 		go func() {
 			defer connections.Done()
-			if err := forward(ctx, conn, target, helper, timeout); err != nil && ctx.Err() == nil {
+			var err error
+			if helper == "" {
+				err = proxy(ctx, conn, target, timeout)
+			} else {
+				err = forward(ctx, conn, target, helper, timeout)
+			}
+			if err != nil && ctx.Err() == nil {
 				log.Printf("winpipe: connection: %v", err)
 			}
 		}()
 	}
+}
+
+func proxy(ctx context.Context, client net.Conn, target string, timeout time.Duration) error {
+	defer client.Close()
+	dialer := net.Dialer{Timeout: timeout}
+	destination, err := dialer.DialContext(ctx, "tcp", target)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", target, err)
+	}
+	return relay(ctx, client, destination)
 }
 
 func forward(ctx context.Context, conn net.Conn, target, helper string, timeout time.Duration) error {
