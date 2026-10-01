@@ -1,0 +1,12 @@
+[Unit]
+Description=winpipe TCP bridge to Windows Chrome
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/winpipe listen --listen 127.0.0.1:9222 --target 127.0.0.1:9222 --helper %h/.local/lib/winpipe/winpipe.exe
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

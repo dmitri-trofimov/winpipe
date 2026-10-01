@@ -112,6 +112,42 @@ point through the bridge without rewriting. For other ports or unusual advertise
 addresses, use the MCP server's `--ws-endpoint` with the WSL listening address
 and the browser path from `/json/version`.
 
+## Start automatically with WSL
+
+For WSL distributions with systemd enabled, install the binaries and user service
+from this project directory:
+
+```sh
+install -Dm755 dist/winpipe "$HOME/.local/bin/winpipe"
+install -Dm755 dist/winpipe.exe "$HOME/.local/lib/winpipe/winpipe.exe"
+install -Dm644 contrib/systemd/winpipe.service "$HOME/.config/systemd/user/winpipe.service"
+systemctl --user daemon-reload
+loginctl enable-linger "$USER"
+systemctl --user enable --now winpipe.service
+```
+
+Enabling linger starts the user service manager when the distribution boots,
+without requiring an interactive login. Depending on your distribution's policy,
+`loginctl enable-linger` may require administrator authorization.
+
+The supplied service forwards WSL `127.0.0.1:9222` to Windows `127.0.0.1:9222`.
+It starts with WSL and restarts on failure. Chrome need not already be running;
+the helper connects to it only when a client connects to the bridge.
+
+```sh
+systemctl --user status winpipe.service
+journalctl --user -u winpipe.service -n 50 --no-pager
+systemctl --user disable --now winpipe.service
+```
+
+After rebuilding, reinstall both binaries using the first two installation
+commands and run `systemctl --user restart winpipe.service`. To use other ports,
+edit the installed unit's `ExecStart`, reload the user manager, and restart it.
+
+This does not start WSL at Windows sign-in, keep WSL alive indefinitely, or launch
+Chrome. Those are separate startup tasks. Do not run a second manual listener on
+port 9222 while this service is active.
+
 ## Limits
 
 - TCP only; no UDP, reverse forwarding, or automatic service startup.
